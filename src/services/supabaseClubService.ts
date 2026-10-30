@@ -206,6 +206,11 @@ export const SupabaseClubService = {
     }
 
     try {
+      // Strictly prevent any Base64 strings or binary data from bloating the Auth request payload
+      // Supabase Auth enforces a 1MB max body limit
+      const rawAvatar = typeof params.avatar === 'string' ? params.avatar.trim() : '';
+      const safeAvatar = rawAvatar.startsWith('data:') ? '' : rawAvatar;
+
       const { data, error } = await client.auth.signUp({
         email: cleanEmail,
         password: cleanPassword,
@@ -219,7 +224,7 @@ export const SupabaseClubService = {
             motivation: (params.motivation || '').trim(),
             bio: (params.motivation || '').trim(),
             city: params.city || 'سوق أهراس، الجزائر',
-            avatar: params.avatar || '',
+            avatar: safeAvatar,
             role: 'member' as UserRole, // دور العضو
             role_label: 'عضو جديد',
             status: 'pending', // حالة طلب الانضمام المعلق للمراجعة
@@ -266,6 +271,47 @@ export const SupabaseClubService = {
         errorCode: 'NETWORK_OR_CLIENT_ERROR',
         arabicMessage: translateSupabaseAuthError(err.message || 'Network error'),
       };
+    }
+  },
+
+  /**
+   * Upload user photo separately to Supabase Storage after account creation
+   * Uses an isolated, secure path scoped to the user ID: avatars/{userId}/avatar-{timestamp}.{ext}
+   */
+  async uploadUserAvatar(userId: string, file: File): Promise<{
+    success: boolean;
+    publicUrl?: string;
+    error?: string;
+  }> {
+    const client = getSupabaseClient();
+    if (!client) {
+      return { success: false, error: 'عميل Supabase غير مهيأ' };
+    }
+
+    try {
+      const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+      const cleanExt = ['jpg', 'jpeg', 'png', 'webp'].includes(ext) ? ext : 'jpg';
+      const filePath = `${userId}/avatar-${Date.now()}.${cleanExt}`;
+
+      const { data, error } = await client.storage
+        .from('avatars')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+        });
+
+      if (error) {
+        console.warn('[SupabaseClubService] Storage upload notice:', error.message);
+        return { success: false, error: error.message };
+      }
+
+      const { data: urlData } = client.storage.from('avatars').getPublicUrl(filePath);
+      return {
+        success: true,
+        publicUrl: urlData?.publicUrl,
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر رفع الصورة إلى التخزين' };
     }
   },
 

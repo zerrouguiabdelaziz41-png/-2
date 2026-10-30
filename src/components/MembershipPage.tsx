@@ -68,6 +68,7 @@ export const MembershipPage: React.FC<MembershipPageProps> = ({
   const [photoPreview, setPhotoPreview] = useState<string>(
     'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&w=600&q=80'
   );
+  const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
   const [agreeTerms, setAgreeTerms] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -81,11 +82,25 @@ export const MembershipPage: React.FC<MembershipPageProps> = ({
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setPhotoPreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        setErrorMessage('نوع الملف غير مدعوم. يرجى اختيار ملف صورة صالح (JPG, PNG, WebP).');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+      // Validate file size: 2MB limit (2 * 1024 * 1024 bytes)
+      const MAX_FILE_SIZE = 2 * 1024 * 1024;
+      if (file.size > MAX_FILE_SIZE) {
+        setErrorMessage('حجم الصورة المحددة يتجاوز 2 ميغابايت. يرجى اختيار صورة أصغر حجماً (الحد الأقصى: 2 ميغابايت).');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+
+      setErrorMessage(null);
+      setSelectedPhotoFile(file);
+      // Create a lightweight local object URL for preview without heavy Base64 conversion
+      const localUrl = URL.createObjectURL(file);
+      setPhotoPreview(localUrl);
     }
   };
 
@@ -126,6 +141,7 @@ export const MembershipPage: React.FC<MembershipPageProps> = ({
     setIsSubmitting(true);
 
     try {
+      // 1. Create account via Supabase Auth without Base64 payload (prevents HTTP 413 body too large error)
       const result = await SupabaseClubService.signUpClubMember({
         email: trimmedEmail,
         password: trimmedPassword,
@@ -134,7 +150,7 @@ export const MembershipPage: React.FC<MembershipPageProps> = ({
         age: parseInt(age, 10) || 16,
         interest: interest,
         motivation: bio.trim(),
-        avatar: photoPreview,
+        avatar: '', // Intentionally omitted from Auth payload
         city: 'سوق أهراس، الجزائر',
       });
 
@@ -147,7 +163,22 @@ export const MembershipPage: React.FC<MembershipPageProps> = ({
         return;
       }
 
-      // Success with Supabase Auth!
+      // 2. Separate upload to Supabase Storage if the user picked a custom photo
+      let finalAvatarUrl = photoPreview;
+      if (selectedPhotoFile && result.userId) {
+        try {
+          const uploadRes = await SupabaseClubService.uploadUserAvatar(result.userId, selectedPhotoFile);
+          if (uploadRes.success && uploadRes.publicUrl) {
+            finalAvatarUrl = uploadRes.publicUrl;
+          } else if (uploadRes.error) {
+            console.warn('[MembershipPage] Notice uploading avatar to storage:', uploadRes.error);
+          }
+        } catch (uploadErr) {
+          console.warn('[MembershipPage] Avatar upload caught error:', uploadErr);
+        }
+      }
+
+      // 3. Success with Supabase Auth!
       const memberNum = String(Math.floor(100000 + Math.random() * 900000));
       setRegisteredMemberNumber(memberNum);
       setNeedsEmailConfirmation(Boolean(result.needsEmailConfirmation));
@@ -162,7 +193,7 @@ export const MembershipPage: React.FC<MembershipPageProps> = ({
         phone: trimmedPhone,
         email: trimmedEmail,
         city: 'سوق أهراس، الجزائر',
-        avatar: photoPreview,
+        avatar: finalAvatarUrl,
         issueDate: new Date().toISOString().split('T')[0].replace(/-/g, '/'),
         expiryDate: '2026/01/15',
         status: 'pending', // حالة طلب الانضمام معلّق للمراجعة
@@ -176,6 +207,7 @@ export const MembershipPage: React.FC<MembershipPageProps> = ({
       setErrorMessage(`حدث خطأ غير متوقع: ${err?.message || 'تعذر إتمام التسجيل'}`);
     }
   };
+
 
   return (
     <div
